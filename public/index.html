@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Redaction Tool</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>PDF Redaction Tool</h1>
+            <p>Upload a PDF, redact sensitive content, and download the redacted version</p>
+        </header>
+
+        <div class="upload-section">
+            <input type="file" id="pdfInput" accept=".pdf" />
+            <button id="uploadBtn">Upload PDF</button>
+        </div>
+
+        <div class="tools-section" id="toolsSection" style="display: none;">
+            <div class="toolbar">
+                <button id="redactBtn" class="tool-btn active">Redaction Tool</button>
+                <button id="clearBtn" class="tool-btn">Clear All Redactions</button>
+                <button id="saveBtn" class="tool-btn save-btn">Save Redacted PDF</button>
+            </div>
+            <div class="instructions">
+                <p>Click and drag on the PDF to create redaction areas (black boxes)</p>
+            </div>
+        </div>
+
+        <div class="viewer-section" id="viewerSection" style="display: none;">
+            <div class="pdf-container">
+                <canvas id="pdfCanvas"></canvas>
+                <div id="redactionLayer"></div>
+            </div>
+            <div class="page-controls">
+                <button id="prevPage">Previous</button>
+                <span id="pageInfo">Page 1 of 1</span>
+                <button id="nextPage">Next</button>
+            </div>
+        </div>
+
+        <div class="status" id="statusDiv"></div>
+    </div>
+
+    <script src="pdf.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
