@@ -173,6 +173,7 @@ app.post('/redact', async (req, res) => {
 });
 
 // Embed endpoint for iframe
+// Embed endpoint for iframe - REPLACE the existing /embed endpoint in your server.js
 app.get('/embed', (req, res) => {
     const html = `
 <!DOCTYPE html>
@@ -218,7 +219,6 @@ app.get('/embed', (req, res) => {
             flex-direction: column;
             align-items: center;
             padding: 20px;
-            /* existing styles... */
             user-select: none;
             -webkit-user-select: none;
             -moz-user-select: none;
@@ -278,6 +278,16 @@ app.get('/embed', (req, res) => {
             color: white;
         }
         
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
         .status {
             flex: 1;
             color: #666;
@@ -300,6 +310,30 @@ app.get('/embed', (req, res) => {
             font-size: 14px;
             color: #666;
         }
+
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            background: #fafafa;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .upload-area:hover {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #007bff;
+            background: #e3f2fd;
+        }
+        
+        #fileInput {
+            display: none;
+        }
                         
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -307,16 +341,25 @@ app.get('/embed', (req, res) => {
 <body>
     <div class="container">
         <div class="toolbar">
-            <div class="status" id="status">Waiting for PDF content...</div>
+            <div class="status" id="status">Upload a PDF file to begin redaction...</div>
+            <button class="btn-primary" onclick="selectFile()" id="uploadBtn">
+                Upload PDF
+            </button>
             <button class="btn-success" onclick="completeRedaction()" id="completeBtn" disabled>
-                Complete Redaction
+                Complete Redaction & Download
             </button>
         </div>
         
         <div class="pdf-container" id="pdfContainer">
-            <div class="loading">Loading PDF redaction interface...</div>
+            <div class="upload-area" onclick="selectFile()" id="uploadArea">
+                <h3>📄 Upload PDF for Redaction</h3>
+                <p>Click here or drag and drop a PDF file</p>
+                <p style="font-size: 12px; color: #666;">Maximum file size: 50MB</p>
+            </div>
         </div>
     </div>
+
+    <input type="file" id="fileInput" accept=".pdf" onchange="handleFileSelect(event)">
 
     <script>
         let pdfDoc = null;
@@ -331,13 +374,69 @@ app.get('/embed', (req, res) => {
         // Configure PDF.js worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         
-        // Listen for PDF content from parent window
+        // Set up drag and drop
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type === 'application/pdf') {
+                handleFile(files[0]);
+            } else {
+                alert('Please upload a PDF file.');
+            }
+        });
+        
+        // Listen for PDF content from parent window (iframe mode)
         window.addEventListener('message', async function(event) {
             console.log('Received message:', event.data);
             if (event.data.type === 'loadPDFContent') {
                 await loadPDFFromBase64(event.data.contentBase64, event.data.fileName);
             }
         });
+        
+        function selectFile() {
+            fileInput.click();
+        }
+        
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file && file.type === 'application/pdf') {
+                handleFile(file);
+            } else {
+                alert('Please select a PDF file.');
+            }
+        }
+        
+        async function handleFile(file) {
+            try {
+                document.getElementById('status').textContent = 'Loading PDF: ' + file.name;
+                
+                // Read file as base64
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const arrayBuffer = e.target.result;
+                    const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+                    await loadPDFFromBase64(base64String, file.name);
+                };
+                reader.readAsArrayBuffer(file);
+                
+            } catch (error) {
+                console.error('Error handling file:', error);
+                document.getElementById('status').textContent = 'Error loading file: ' + error.message;
+            }
+        }
         
         async function loadPDFFromBase64(base64Content, fileName) {
             try {
@@ -357,27 +456,35 @@ app.get('/embed', (req, res) => {
                 pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
                 totalPages = pdfDoc.numPages;
                 
+                // Clear redactions for new PDF
+                redactions = [];
+                
                 // Render first page
                 await renderPage(1);
                 
                 document.getElementById('status').textContent = \`PDF loaded (\${totalPages} pages). Click and drag to create redaction areas.\`;
                 document.getElementById('completeBtn').disabled = false;
+                document.getElementById('uploadBtn').textContent = 'Upload Different PDF';
                 
-                // Notify parent that PDF is loaded
-                window.parent.postMessage({
-                    type: 'pdfLoaded',
-                    fileName: fileName,
-                    totalPages: totalPages
-                }, '*');
+                // Notify parent that PDF is loaded (if in iframe)
+                if (window.self !== window.top) {
+                    window.parent.postMessage({
+                        type: 'pdfLoaded',
+                        fileName: fileName,
+                        totalPages: totalPages
+                    }, '*');
+                }
                 
             } catch (error) {
                 console.error('Error loading PDF:', error);
                 document.getElementById('status').textContent = 'Error loading PDF: ' + error.message;
                 
-                window.parent.postMessage({
-                    type: 'error',
-                    error: error.message
-                }, '*');
+                if (window.self !== window.top) {
+                    window.parent.postMessage({
+                        type: 'error',
+                        error: error.message
+                    }, '*');
+                }
             }
         }
         
@@ -395,9 +502,9 @@ app.get('/embed', (req, res) => {
                     const pageControls = document.createElement('div');
                     pageControls.className = 'page-controls';
                     pageControls.innerHTML = \`
-                        <button onclick="prevPage()" \${currentPage <= 1 ? 'disabled' : ''}>Previous</button>
+                        <button class="btn-secondary" onclick="prevPage()" \${currentPage <= 1 ? 'disabled' : ''}>Previous</button>
                         <span class="page-info">Page \${currentPage} of \${totalPages}</span>
-                        <button onclick="nextPage()" \${currentPage >= totalPages ? 'disabled' : ''}>Next</button>
+                        <button class="btn-secondary" onclick="nextPage()" \${currentPage >= totalPages ? 'disabled' : ''}>Next</button>
                     \`;
                     container.appendChild(pageControls);
                 }
@@ -474,7 +581,7 @@ app.get('/embed', (req, res) => {
                 e.stopPropagation();
             });
             
-            // Mouse move on document (not just canvas) - this is key!
+            // Mouse move on document
             document.addEventListener('mousemove', function(e) {
                 if (!isDrawing || !currentRedactionDiv) return;
                 
@@ -504,7 +611,7 @@ app.get('/embed', (req, res) => {
                 e.stopPropagation();
             });
             
-            // Mouse up on document (not just canvas) - this is key!
+            // Mouse up on document
             document.addEventListener('mouseup', function(e) {
                 if (!isDrawing || !currentRedactionDiv) return;
                 
@@ -560,12 +667,6 @@ app.get('/embed', (req, res) => {
             // Prevent text selection during drawing
             canvas.addEventListener('selectstart', function(e) {
                 e.preventDefault();
-            });
-            
-            // Handle mouse leave canvas
-            canvas.addEventListener('mouseleave', function(e) {
-                // Don't stop drawing when mouse leaves canvas, 
-                // document listeners will handle it
             });
         }
         
@@ -635,16 +736,28 @@ app.get('/embed', (req, res) => {
                 if (result.success) {
                     console.log('Redaction completed successfully');
                     
-                    // Send result back to parent window
-                    window.parent.postMessage({
-                        type: 'redactionComplete',
-                        data: {
-                            success: true,
-                            redactedPdfBase64: result.redactedPdfBase64,
-                            redactionsApplied: result.redactionsApplied,
-                            message: result.message
-                        }
-                    }, '*');
+                    // Check if we're in an iframe or standalone
+                    const isInIframe = window.self !== window.top;
+                    
+                    if (isInIframe) {
+                        // Send result back to parent window (iframe mode)
+                        window.parent.postMessage({
+                            type: 'redactionComplete',
+                            data: {
+                                success: true,
+                                redactedPdfBase64: result.redactedPdfBase64,
+                                redactionsApplied: result.redactionsApplied,
+                                message: result.message
+                            }
+                        }, '*');
+                    } else {
+                        // Handle direct download (standalone mode)
+                        downloadRedactedPDF(result.redactedPdfBase64, 'redacted_document.pdf');
+                    }
+                    
+                    document.getElementById('status').textContent = 
+                        \`Redaction complete! \${result.redactionsApplied} areas processed. Download started.\`;
+                    
                 } else {
                     throw new Error(result.error || 'Redaction failed');
                 }
@@ -653,21 +766,61 @@ app.get('/embed', (req, res) => {
                 console.error('Error completing redaction:', error);
                 document.getElementById('status').textContent = 'Error: ' + error.message;
                 
-                window.parent.postMessage({
-                    type: 'error',
-                    error: error.message
-                }, '*');
-                
+                // Send error to parent if in iframe
+                if (window.self !== window.top) {
+                    window.parent.postMessage({
+                        type: 'error',
+                        error: error.message
+                    }, '*');
+                }
+            } finally {
                 document.getElementById('completeBtn').disabled = false;
+            }
+        }
+        
+        // Function to handle direct PDF downloads
+        function downloadRedactedPDF(base64Data, filename) {
+            try {
+                // Convert base64 to blob
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                const blob = new Blob([bytes], { type: 'application/pdf' });
+                
+                // Create download link
+                const url = URL.createObjectURL(blob);
+                const downloadLink = document.createElement('a');
+                downloadLink.href = url;
+                downloadLink.download = filename;
+                downloadLink.style.display = 'none';
+                
+                // Trigger download
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                
+                // Clean up the URL object
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                
+                console.log('PDF download triggered successfully');
+                
+            } catch (error) {
+                console.error('Error downloading PDF:', error);
+                alert('Error downloading PDF: ' + error.message);
             }
         }
         
         // Notify parent window that iframe is ready
         window.addEventListener('load', function() {
             console.log('PDF redaction interface loaded');
-            window.parent.postMessage({
-                type: 'iframeReady'
-            }, '*');
+            if (window.self !== window.top) {
+                window.parent.postMessage({
+                    type: 'iframeReady'
+                }, '*');
+            }
         });
     </script>
 </body>
