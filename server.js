@@ -218,6 +218,11 @@ app.get('/embed', (req, res) => {
             flex-direction: column;
             align-items: center;
             padding: 20px;
+            /* existing styles... */
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
         }
         
         .canvas-container {
@@ -229,8 +234,12 @@ app.get('/embed', (req, res) => {
             display: block;
             border: 1px solid #ddd;
             cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
         }
-        
+
         .redaction-box {
             position: absolute;
             background: rgba(255, 0, 0, 0.3);
@@ -238,6 +247,7 @@ app.get('/embed', (req, res) => {
             cursor: pointer;
             pointer-events: auto;
             z-index: 10;
+            user-select: none;
         }
         
         .redaction-box:hover {
@@ -290,6 +300,7 @@ app.get('/embed', (req, res) => {
             font-size: 14px;
             color: #666;
         }
+                        
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
