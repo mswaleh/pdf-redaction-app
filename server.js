@@ -172,7 +172,85 @@ app.post('/redact', async (req, res) => {
     }
 });
 
-// Embed endpoint for iframe
+// NEW: Alternative download endpoint that handles file creation on server
+app.post('/redact-and-download', async (req, res) => {
+    try {
+        const { filename, redactions, contentBase64 } = req.body;
+        
+        let pdfBytes;
+        
+        if (contentBase64) {
+            console.log(`Processing redactions on base64 content for download`);
+            pdfBytes = Buffer.from(contentBase64, 'base64');
+        } else if (filename) {
+            const filePath = path.join(__dirname, 'uploads', filename);
+            if (!fs.existsSync(filePath)) {
+                return res.status(404).json({ error: 'File not found' });
+            }
+            pdfBytes = fs.readFileSync(filePath);
+        } else {
+            return res.status(400).json({ error: 'Missing filename or contentBase64' });
+        }
+
+        if (!redactions || !Array.isArray(redactions)) {
+            return res.status(400).json({ error: 'Missing or invalid redactions array' });
+        }
+
+        console.log(`Processing ${redactions.length} redactions for direct download`);
+
+        // Process the PDF
+        const pdfDoc = await PDFDocument.load(pdfBytes);
+        
+        // Apply true redactions
+        for (const redaction of redactions) {
+            await applyTrueTextRedaction(pdfDoc, redaction);
+        }
+
+        // Save redacted PDF
+        const redactedPdfBytes = await pdfDoc.save({
+            useObjectStreams: false,
+            addDefaultPage: false
+        });
+        
+        // Create filename with timestamp
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const downloadFilename = `redacted_document_${timestamp}.pdf`;
+        
+        console.log(`Sending redacted PDF for download: ${downloadFilename}`);
+
+        // Set headers for file download
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
+        res.setHeader('Content-Length', redactedPdfBytes.length);
+        
+        // Send the PDF bytes directly
+        res.send(Buffer.from(redactedPdfBytes));
+
+    } catch (error) {
+        console.error('Download redaction error:', error);
+        res.status(500).json({ error: 'Failed to redact and download PDF: ' + error.message });
+    }
+});
+
+// NEW: Test download endpoint to verify download functionality
+app.get('/test-download', (req, res) => {
+    try {
+        const testContent = 'This is a test file to verify download functionality works.';
+        const buffer = Buffer.from(testContent, 'utf8');
+        
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Content-Disposition', 'attachment; filename="test-download.txt"');
+        res.setHeader('Content-Length', buffer.length);
+        
+        res.send(buffer);
+        console.log('Test download sent successfully');
+    } catch (error) {
+        console.error('Test download error:', error);
+        res.status(500).json({ error: 'Test download failed: ' + error.message });
+    }
+});
+
+// Enhanced Embed endpoint for iframe with improved download functionality
 app.get('/embed', (req, res) => {
     const html = `
 <!DOCTYPE html>
@@ -218,7 +296,6 @@ app.get('/embed', (req, res) => {
             flex-direction: column;
             align-items: center;
             padding: 20px;
-            /* existing styles... */
             user-select: none;
             -webkit-user-select: none;
             -moz-user-select: none;
@@ -278,6 +355,16 @@ app.get('/embed', (req, res) => {
             color: white;
         }
         
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
         .status {
             flex: 1;
             color: #666;
@@ -300,6 +387,30 @@ app.get('/embed', (req, res) => {
             font-size: 14px;
             color: #666;
         }
+
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            background: #fafafa;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .upload-area:hover {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #007bff;
+            background: #e3f2fd;
+        }
+        
+        #fileInput {
+            display: none;
+        }
                         
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -307,16 +418,25 @@ app.get('/embed', (req, res) => {
 <body>
     <div class="container">
         <div class="toolbar">
-            <div class="status" id="status">Waiting for PDF content...</div>
+            <div class="status" id="status">Upload a PDF file to begin redaction...</div>
+            <button class="btn-primary" onclick="selectFile()" id="uploadBtn">
+                Upload PDF
+            </button>
             <button class="btn-success" onclick="completeRedaction()" id="completeBtn" disabled>
-                Complete Redaction
+                Complete Redaction & Download
             </button>
         </div>
         
         <div class="pdf-container" id="pdfContainer">
-            <div class="loading">Loading PDF redaction interface...</div>
+            <div class="upload-area" onclick="selectFile()" id="uploadArea">
+                <h3>📄 Upload PDF for Redaction</h3>
+                <p>Click here or drag and drop a PDF file</p>
+                <p style="font-size: 12px; color: #666;">Maximum file size: 50MB</p>
+            </div>
         </div>
     </div>
+
+    <input type="file" id="fileInput" accept=".pdf" onchange="handleFileSelect(event)">
 
     <script>
         let pdfDoc = null;
@@ -331,13 +451,69 @@ app.get('/embed', (req, res) => {
         // Configure PDF.js worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         
-        // Listen for PDF content from parent window
+        // Set up drag and drop
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type === 'application/pdf') {
+                handleFile(files[0]);
+            } else {
+                alert('Please upload a PDF file.');
+            }
+        });
+        
+        // Listen for PDF content from parent window (iframe mode)
         window.addEventListener('message', async function(event) {
             console.log('Received message:', event.data);
             if (event.data.type === 'loadPDFContent') {
                 await loadPDFFromBase64(event.data.contentBase64, event.data.fileName);
             }
         });
+        
+        function selectFile() {
+            fileInput.click();
+        }
+        
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file && file.type === 'application/pdf') {
+                handleFile(file);
+            } else {
+                alert('Please select a PDF file.');
+            }
+        }
+        
+        async function handleFile(file) {
+            try {
+                document.getElementById('status').textContent = 'Loading PDF: ' + file.name;
+                
+                // Read file as base64
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const arrayBuffer = e.target.result;
+                    const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+                    await loadPDFFromBase64(base64String, file.name);
+                };
+                reader.readAsArrayBuffer(file);
+                
+            } catch (error) {
+                console.error('Error handling file:', error);
+                document.getElementById('status').textContent = 'Error loading file: ' + error.message;
+            }
+        }
         
         async function loadPDFFromBase64(base64Content, fileName) {
             try {
@@ -357,27 +533,35 @@ app.get('/embed', (req, res) => {
                 pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
                 totalPages = pdfDoc.numPages;
                 
+                // Clear redactions for new PDF
+                redactions = [];
+                
                 // Render first page
                 await renderPage(1);
                 
                 document.getElementById('status').textContent = \`PDF loaded (\${totalPages} pages). Click and drag to create redaction areas.\`;
                 document.getElementById('completeBtn').disabled = false;
+                document.getElementById('uploadBtn').textContent = 'Upload Different PDF';
                 
-                // Notify parent that PDF is loaded
-                window.parent.postMessage({
-                    type: 'pdfLoaded',
-                    fileName: fileName,
-                    totalPages: totalPages
-                }, '*');
+                // Notify parent that PDF is loaded (if in iframe)
+                if (window.self !== window.top) {
+                    window.parent.postMessage({
+                        type: 'pdfLoaded',
+                        fileName: fileName,
+                        totalPages: totalPages
+                    }, '*');
+                }
                 
             } catch (error) {
                 console.error('Error loading PDF:', error);
                 document.getElementById('status').textContent = 'Error loading PDF: ' + error.message;
                 
-                window.parent.postMessage({
-                    type: 'error',
-                    error: error.message
-                }, '*');
+                if (window.self !== window.top) {
+                    window.parent.postMessage({
+                        type: 'error',
+                        error: error.message
+                    }, '*');
+                }
             }
         }
         
@@ -395,9 +579,9 @@ app.get('/embed', (req, res) => {
                     const pageControls = document.createElement('div');
                     pageControls.className = 'page-controls';
                     pageControls.innerHTML = \`
-                        <button onclick="prevPage()" \${currentPage <= 1 ? 'disabled' : ''}>Previous</button>
+                        <button class="btn-secondary" onclick="prevPage()" \${currentPage <= 1 ? 'disabled' : ''}>Previous</button>
                         <span class="page-info">Page \${currentPage} of \${totalPages}</span>
-                        <button onclick="nextPage()" \${currentPage >= totalPages ? 'disabled' : ''}>Next</button>
+                        <button class="btn-secondary" onclick="nextPage()" \${currentPage >= totalPages ? 'disabled' : ''}>Next</button>
                     \`;
                     container.appendChild(pageControls);
                 }
@@ -474,7 +658,7 @@ app.get('/embed', (req, res) => {
                 e.stopPropagation();
             });
             
-            // Mouse move on document (not just canvas) - this is key!
+            // Mouse move on document
             document.addEventListener('mousemove', function(e) {
                 if (!isDrawing || !currentRedactionDiv) return;
                 
@@ -504,7 +688,7 @@ app.get('/embed', (req, res) => {
                 e.stopPropagation();
             });
             
-            // Mouse up on document (not just canvas) - this is key!
+            // Mouse up on document
             document.addEventListener('mouseup', function(e) {
                 if (!isDrawing || !currentRedactionDiv) return;
                 
@@ -561,12 +745,6 @@ app.get('/embed', (req, res) => {
             canvas.addEventListener('selectstart', function(e) {
                 e.preventDefault();
             });
-            
-            // Handle mouse leave canvas
-            canvas.addEventListener('mouseleave', function(e) {
-                // Don't stop drawing when mouse leaves canvas, 
-                // document listeners will handle it
-            });
         }
         
         function renderExistingRedactions(container, pageNum) {
@@ -606,6 +784,7 @@ app.get('/embed', (req, res) => {
             }
         }
         
+        // Enhanced redaction completion with multiple download methods
         async function completeRedaction() {
             try {
                 if (redactions.length === 0) {
@@ -618,7 +797,110 @@ app.get('/embed', (req, res) => {
                 
                 console.log('Sending redaction data:', redactions);
                 
-                // Send redaction request to server
+                // Check if we're in an iframe or standalone
+                const isInIframe = window.self !== window.top;
+                console.log('Is in iframe:', isInIframe);
+                
+                if (isInIframe) {
+                    // For iframe mode, use the original API that returns base64
+                    await processRedactionForIframe();
+                } else {
+                    // For standalone mode, try server-side download first, then fallback to client-side
+                    const success = await tryServerSideDownload();
+                    if (!success) {
+                        console.log('Server-side download failed, trying client-side...');
+                        await processRedactionForClientDownload();
+                    }
+                }
+                
+            } catch (error) {
+                console.error('Error completing redaction:', error);
+                document.getElementById('status').textContent = 'Error: ' + error.message;
+                
+                // Send error to parent if in iframe
+                if (window.self !== window.top) {
+                    window.parent.postMessage({
+                        type: 'error',
+                        error: error.message
+                    }, '*');
+                }
+            } finally {
+                document.getElementById('completeBtn').disabled = false;
+            }
+        }
+
+        // Server-side download approach
+        async function tryServerSideDownload() {
+            try {
+                console.log('Attempting server-side download...');
+                
+                const response = await fetch('/redact-and-download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        redactions: redactions,
+                        contentBase64: pdfContentBase64
+                    })
+                });
+                
+                console.log('Server download response status:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Server download failed:', response.status, response.statusText);
+                    return false;
+                }
+                
+                // Check if response is actually a PDF
+                const contentType = response.headers.get('Content-Type');
+                console.log('Response content type:', contentType);
+                
+                if (contentType !== 'application/pdf') {
+                    console.error('Server did not return PDF, got:', contentType);
+                    return false;
+                }
+                
+                // Get the PDF blob
+                const blob = await response.blob();
+                console.log('Received blob size:', blob.size);
+                
+                if (blob.size === 0) {
+                    console.error('Received empty blob from server');
+                    return false;
+                }
+                
+                // Create download link for the blob
+                const url = URL.createObjectURL(blob);
+                const downloadLink = document.createElement('a');
+                downloadLink.href = url;
+                downloadLink.download = 'redacted_document.pdf';
+                downloadLink.style.display = 'none';
+                
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                
+                // Clean up
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                
+                document.getElementById('status').textContent = 
+                    \`Redaction complete! \${redactions.length} areas processed. Download started.\`;
+                
+                console.log('Server-side download completed successfully');
+                return true;
+                
+            } catch (error) {
+                console.error('Server-side download error:', error);
+                return false;
+            }
+        }
+
+        // Client-side download approach (fallback)
+        async function processRedactionForClientDownload() {
+            try {
+                console.log('Processing redaction for client-side download...');
+                
                 const response = await fetch('/redact', {
                     method: 'POST',
                     headers: {
@@ -630,11 +912,50 @@ app.get('/embed', (req, res) => {
                     })
                 });
                 
+                if (!response.ok) {
+                    throw new Error(\`Server error: \${response.status} \${response.statusText}\`);
+                }
+                
+                const result = await response.json();
+                console.log('Client download - server response received');
+                
+                if (result.success) {
+                    downloadRedactedPDF(result.redactedPdfBase64, 'redacted_document.pdf');
+                    document.getElementById('status').textContent = 
+                        \`Redaction complete! \${result.redactionsApplied} areas processed.\`;
+                } else {
+                    throw new Error(result.error || 'Redaction failed');
+                }
+                
+            } catch (error) {
+                console.error('Client-side redaction error:', error);
+                throw error;
+            }
+        }
+
+        // Iframe mode processing
+        async function processRedactionForIframe() {
+            try {
+                console.log('Processing redaction for iframe mode...');
+                
+                const response = await fetch('/redact', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        redactions: redactions,
+                        contentBase64: pdfContentBase64
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(\`Server error: \${response.status} \${response.statusText}\`);
+                }
+                
                 const result = await response.json();
                 
                 if (result.success) {
-                    console.log('Redaction completed successfully');
-                    
                     // Send result back to parent window
                     window.parent.postMessage({
                         type: 'redactionComplete',
@@ -645,29 +966,86 @@ app.get('/embed', (req, res) => {
                             message: result.message
                         }
                     }, '*');
+                    
+                    document.getElementById('status').textContent = 
+                        \`Redaction complete! \${result.redactionsApplied} areas processed.\`;
                 } else {
                     throw new Error(result.error || 'Redaction failed');
                 }
                 
             } catch (error) {
-                console.error('Error completing redaction:', error);
-                document.getElementById('status').textContent = 'Error: ' + error.message;
+                console.error('Iframe redaction error:', error);
+                throw error;
+            }
+        }
+        
+        // Enhanced downloadRedactedPDF function (fallback method)
+        function downloadRedactedPDF(base64Data, filename) {
+            try {
+                console.log('Starting client-side PDF download...');
                 
-                window.parent.postMessage({
-                    type: 'error',
-                    error: error.message
-                }, '*');
+                if (!base64Data) {
+                    throw new Error('No PDF data received from server');
+                }
                 
-                document.getElementById('completeBtn').disabled = false;
+                // Clean the base64 string
+                const cleanBase64 = base64Data.replace(/\s/g, '');
+                
+                // Method 1: Try blob approach
+                try {
+                    const binaryString = atob(cleanBase64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    
+                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                    
+                    if (blob.size > 0) {
+                        const url = URL.createObjectURL(blob);
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = url;
+                        downloadLink.download = filename;
+                        downloadLink.style.display = 'none';
+                        
+                        document.body.appendChild(downloadLink);
+                        downloadLink.click();
+                        document.body.removeChild(downloadLink);
+                        
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        console.log('Blob download successful');
+                        return;
+                    }
+                } catch (e) {
+                    console.warn('Blob method failed:', e);
+                }
+                
+                // Method 2: Data URL approach
+                console.log('Trying data URL method...');
+                const dataUrl = 'data:application/pdf;base64,' + cleanBase64;
+                const fallbackLink = document.createElement('a');
+                fallbackLink.href = dataUrl;
+                fallbackLink.download = filename;
+                fallbackLink.style.display = 'none';
+                document.body.appendChild(fallbackLink);
+                fallbackLink.click();
+                document.body.removeChild(fallbackLink);
+                console.log('Data URL download attempted');
+                
+            } catch (error) {
+                console.error('All download methods failed:', error);
+                alert('Download failed. Error: ' + error.message);
             }
         }
         
         // Notify parent window that iframe is ready
         window.addEventListener('load', function() {
             console.log('PDF redaction interface loaded');
-            window.parent.postMessage({
-                type: 'iframeReady'
-            }, '*');
+            if (window.self !== window.top) {
+                window.parent.postMessage({
+                    type: 'iframeReady'
+                }, '*');
+            }
         });
     </script>
 </body>
@@ -677,8 +1055,7 @@ app.get('/embed', (req, res) => {
     res.send(html);
 });
 
-// True redaction endpoint with actual text removal from content streams
-// Enhanced applyTrueTextRedaction function - replace the existing one
+// Enhanced applyTrueTextRedaction function with improved text removal
 async function applyTrueTextRedaction(pdfDoc, redaction) {
     try {
         const page = pdfDoc.getPage(redaction.pageIndex);
@@ -769,8 +1146,7 @@ async function applyTrueTextRedaction(pdfDoc, redaction) {
     }
 }
 
-// Process individual content streams to remove text in redacted areas
-// Enhanced processContentStream function - replace the existing one
+// Enhanced processContentStream function with better text removal
 async function processContentStream(pdfDoc, streamRef, x, y, width, height) {
     try {
         // Get the content stream object
@@ -812,8 +1188,7 @@ async function processContentStream(pdfDoc, streamRef, x, y, width, height) {
     }
 }
 
-// Remove text operations that fall within the redacted area
-// Enhanced removeTextInArea function - replace the existing one
+// Enhanced removeTextInArea function with better text object handling
 function removeTextInArea(contentString, x, y, width, height) {
     try {
         console.log(`Removing text in area: x=${x}, y=${y}, w=${width}, h=${height}`);
@@ -921,7 +1296,7 @@ function isPositionInRedactedArea(textX, textY, redactX, redactY, redactWidth, r
             textY <= (redactY + redactHeight + padding));
 }
 
-// Download endpoint
+// Download endpoint (keep existing functionality)
 app.get('/download/:filename', (req, res) => {
     const filename = req.params.filename;
     const filePath = path.join(__dirname, 'uploads', filename);
@@ -944,6 +1319,7 @@ app.use((error, req, res, next) => {
 
 app.listen(PORT, () => {
     console.log(`PDF Redaction Server running on http://localhost:${PORT}`);
-    console.log('True text removal redaction enabled');
+    console.log('Enhanced true text removal redaction enabled');
     console.log('CORS enabled for iframe embedding');
+    console.log('Multiple download methods available');
 });
