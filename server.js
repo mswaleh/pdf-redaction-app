@@ -229,31 +229,49 @@ app.get('/proxy-pdf', async (req, res) => {
     }
 });
 
-// NEW: Download PDF from URL endpoint for LWC integration
+// NEW: Download PDF from URL or base64 content endpoint for LWC integration
 app.post('/download-and-redact', async (req, res) => {
     try {
-        const { fileUrl, redactions, fileName } = req.body;
+        const { fileUrl, fileContent, redactions, fileName } = req.body;
         
-        console.log('Download and redact request:', { fileUrl, fileName, redactionsCount: redactions?.length });
+        console.log('Download and redact request:', { 
+            hasFileUrl: !!fileUrl, 
+            hasFileContent: !!fileContent,
+            fileName, 
+            redactionsCount: redactions?.length 
+        });
         
-        if (!fileUrl) {
-            return res.status(400).json({ error: 'File URL is required' });
+        if (!fileUrl && !fileContent) {
+            return res.status(400).json({ error: 'Either fileUrl or fileContent is required' });
         }
         
         if (!redactions || redactions.length === 0) {
             return res.status(400).json({ error: 'Redactions are required' });
         }
 
-        // Download the PDF from the URL
-        console.log('Downloading PDF from:', fileUrl);
-        const pdfResponse = await fetch(fileUrl);
+        let pdfBuffer;
         
-        if (!pdfResponse.ok) {
-            throw new Error(`Failed to download PDF: ${pdfResponse.status} ${pdfResponse.statusText}`);
+        if (fileContent) {
+            // Use base64 content directly (preferred for private cloud storage)
+            console.log('Using provided base64 content');
+            try {
+                pdfBuffer = Buffer.from(fileContent, 'base64');
+                console.log('Decoded PDF from base64, size:', pdfBuffer.length, 'bytes');
+            } catch (decodeError) {
+                throw new Error('Invalid base64 content: ' + decodeError.message);
+            }
+        } else {
+            // Fallback to downloading from URL
+            console.log('Downloading PDF from:', fileUrl);
+            const pdfResponse = await fetch(fileUrl);
+            
+            if (!pdfResponse.ok) {
+                throw new Error(`Failed to download PDF: ${pdfResponse.status} ${pdfResponse.statusText}`);
+            }
+            
+            pdfBuffer = await pdfResponse.buffer();
+            console.log('Downloaded PDF, size:', pdfBuffer.length, 'bytes');
         }
-        
-        const pdfBuffer = await pdfResponse.buffer();
-        console.log('Downloaded PDF, size:', pdfBuffer.length, 'bytes');
 
         // Load and redact the PDF
         const pdfDoc = await PDFDocument.load(pdfBuffer);
