@@ -9,18 +9,27 @@ const fetch = require('node-fetch'); // Add this dependency
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enhanced CORS for LWC integration
+// Enhanced CORS for LWC integration and PDF proxy
 app.use(cors({
     origin: ['*', 'https://*.lightning.force.com', 'https://*.salesforce.com'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Range'],
     credentials: true
 }));
 
-// Set headers for iframe embedding in Salesforce
+// Set headers for iframe embedding in Salesforce and PDF loading
 app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'ALLOWALL');
     res.setHeader('Content-Security-Policy', "frame-ancestors * 'self'");
+    
+    // Additional headers for PDF loading
+    if (req.path.includes('/proxy-pdf') || req.path.includes('/embed')) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+        res.setHeader('Accept-Ranges', 'bytes');
+    }
+    
     next();
 });
 
@@ -52,6 +61,172 @@ const upload = multer({
         }
     },
     limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
+});
+
+// NEW: Test PDF accessibility endpoint for debugging
+app.get('/test-pdf-access', async (req, res) => {
+    try {
+        const { url } = req.query;
+        
+        if (!url) {
+            return res.status(400).json({ error: 'URL parameter is required' });
+        }
+        
+        console.log('Testing PDF access for URL:', url);
+        
+        // Test basic HEAD request first
+        const headResponse = await fetch(url, { method: 'HEAD' });
+        
+        const testResult = {
+            url: url,
+            accessible: headResponse.ok,
+            status: headResponse.status,
+            statusText: headResponse.statusText,
+            headers: {}
+        };
+        
+        // Collect relevant headers
+        ['content-type', 'content-length', 'access-control-allow-origin', 'cache-control'].forEach(header => {
+            const value = headResponse.headers.get(header);
+            if (value) {
+                testResult.headers[header] = value;
+            }
+        });
+        
+        if (headResponse.ok) {
+            // Try to fetch a small portion to verify it's actually a PDF
+            try {
+                const partialResponse = await fetch(url, {
+                    headers: { 'Range': 'bytes=0-1023' }
+                });
+                
+                if (partialResponse.ok) {
+                    const buffer = await partialResponse.buffer();
+                    const header = buffer.slice(0, 4).toString();
+                    testResult.isPDF = header === '%PDF';
+                    testResult.fileHeader = header;
+                }
+            } catch (rangeError) {
+                testResult.rangeRequestError = rangeError.message;
+            }
+        }
+        
+        console.log('PDF access test result:', testResult);
+        res.json(testResult);
+        
+    } catch (error) {
+        console.error('PDF access test error:', error);
+        res.status(500).json({
+            error: 'Test failed: ' + error.message,
+            url: req.query.url
+        });
+    }
+});
+
+// Handle OPTIONS requests for CORS preflight
+app.options('/proxy-pdf', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+    res.status(200).end();
+});
+
+// NEW: PDF Proxy endpoint to handle CORS issues with cloud storage
+app.get('/proxy-pdf', async (req, res) => {
+    try {
+        const { url } = req.query;
+        
+        console.log('Proxying PDF from URL:', url);
+        
+        if (!url) {
+            return res.status(400).json({ error: 'URL parameter is required' });
+        }
+        
+        // Validate URL format
+        try {
+            new URL(url);
+        } catch (urlError) {
+            return res.status(400).json({ error: 'Invalid URL format' });
+        }
+        
+        // Set up fetch options
+        const fetchOptions = {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'PDF-Redaction-Service/1.0'
+            }
+        };
+        
+        // Handle Range requests for PDF.js streaming
+        if (req.headers.range) {
+            fetchOptions.headers['Range'] = req.headers.range;
+            console.log('Range request:', req.headers.range);
+        }
+        
+        // Fetch the PDF from the original URL
+        const pdfResponse = await fetch(url, fetchOptions);
+        
+        if (!pdfResponse.ok) {
+            console.error('Failed to fetch PDF:', pdfResponse.status, pdfResponse.statusText);
+            throw new Error(`Failed to fetch PDF: ${pdfResponse.status} ${pdfResponse.statusText}`);
+        }
+        
+        // Get the content type from the original response
+        const contentType = pdfResponse.headers.get('content-type') || 'application/pdf';
+        const contentLength = pdfResponse.headers.get('content-length');
+        const acceptRanges = pdfResponse.headers.get('accept-ranges');
+        
+        console.log('PDF fetch successful:', {
+            contentType,
+            contentLength,
+            acceptRanges,
+            status: pdfResponse.status
+        });
+        
+        // Set proper headers for PDF serving with CORS
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Accept-Ranges, Content-Range');
+        
+        if (contentLength) {
+            res.setHeader('Content-Length', contentLength);
+        }
+        
+        if (acceptRanges) {
+            res.setHeader('Accept-Ranges', acceptRanges);
+        }
+        
+        // Handle partial content responses
+        if (pdfResponse.status === 206) {
+            res.status(206);
+            const contentRange = pdfResponse.headers.get('content-range');
+            if (contentRange) {
+                res.setHeader('Content-Range', contentRange);
+            }
+        }
+        
+        res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+        
+        // Stream the PDF content
+        const pdfBuffer = await pdfResponse.buffer();
+        res.send(pdfBuffer);
+        
+        console.log('PDF proxied successfully, size:', pdfBuffer.length, 'bytes');
+        
+    } catch (error) {
+        console.error('PDF proxy error:', error);
+        console.error('Error details:', {
+            message: error.message,
+            stack: error.stack
+        });
+        
+        res.status(500).json({ 
+            error: 'Failed to proxy PDF: ' + error.message,
+            details: error.stack
+        });
+    }
 });
 
 // NEW: Download PDF from URL endpoint for LWC integration
@@ -275,6 +450,7 @@ app.get('/embed', (req, res) => {
             
             <div class="controls">
                 <button class="btn btn-primary" onclick="loadPDF()">Load PDF</button>
+                <button class="btn btn-secondary" onclick="testPDFAccess()">Test PDF Access</button>
                 <button class="btn btn-secondary" onclick="clearRedactions()">Clear All</button>
                 <button class="btn btn-success" onclick="completeRedaction()" disabled id="saveBtn">
                     Complete Redaction
@@ -338,6 +514,43 @@ app.get('/embed', (req, res) => {
             }
         }
         
+        async function testPDFAccess() {
+            if (!fileUrl) {
+                showStatus('No file URL provided', 'error');
+                return;
+            }
+            
+            try {
+                showStatus('Testing PDF accessibility...', 'info');
+                
+                const testUrl = '/test-pdf-access?url=' + encodeURIComponent(fileUrl);
+                const response = await fetch(testUrl);
+                const result = await response.json();
+                
+                console.log('PDF access test result:', result);
+                
+                if (result.accessible) {
+                    if (result.isPDF) {
+                        showStatus('✓ PDF is accessible and valid. You can now load it for redaction.', 'success');
+                    } else {
+                        showStatus('⚠ File is accessible but may not be a valid PDF. Header: ' + (result.fileHeader || 'unknown'), 'error');
+                    }
+                } else {
+                    showStatus('✗ PDF is not accessible. Status: ' + result.status + ' ' + result.statusText, 'error');
+                }
+                
+                // Show detailed info in console
+                console.log('PDF Headers:', result.headers);
+                if (result.rangeRequestError) {
+                    console.log('Range request failed:', result.rangeRequestError);
+                }
+                
+            } catch (error) {
+                console.error('PDF access test failed:', error);
+                showStatus('PDF access test failed: ' + error.message, 'error');
+            }
+        }
+        
         async function loadPDF() {
             if (!fileUrl) {
                 showStatus('No file URL provided', 'error');
@@ -350,8 +563,13 @@ app.get('/embed', (req, res) => {
                 const container = document.getElementById('pdfContainer');
                 container.innerHTML = '<div class="loading"><div class="spinner"></div>Loading PDF...</div>';
                 
+                // Use proxy URL to avoid CORS issues with cloud storage
+                const proxyUrl = '/proxy-pdf?url=' + encodeURIComponent(fileUrl);
+                console.log('Original PDF URL:', fileUrl);
+                console.log('Loading PDF via proxy:', proxyUrl);
+                
                 // Load PDF
-                const loadingTask = pdfjsLib.getDocument(fileUrl);
+                const loadingTask = pdfjsLib.getDocument(proxyUrl);
                 pdfDoc = await loadingTask.promise;
                 
                 // Render first page
@@ -364,7 +582,21 @@ app.get('/embed', (req, res) => {
                 
             } catch (error) {
                 console.error('Error loading PDF:', error);
-                showStatus('Error loading PDF: ' + error.message, 'error');
+                console.error('PDF URL attempted:', fileUrl);
+                console.error('Proxy URL attempted:', proxyUrl);
+                
+                let errorMessage = 'Error loading PDF: ' + error.message;
+                
+                // Provide more specific error messages
+                if (error.message.includes('Failed to fetch')) {
+                    errorMessage = 'Could not access the PDF file. This may be due to network issues or file permissions.';
+                } else if (error.message.includes('Invalid PDF')) {
+                    errorMessage = 'The file does not appear to be a valid PDF document.';
+                } else if (error.message.includes('401') || error.message.includes('403')) {
+                    errorMessage = 'Access denied to the PDF file. Please check file permissions.';
+                }
+                
+                showStatus(errorMessage, 'error');
             }
         }
         
@@ -567,7 +799,11 @@ app.get('/embed', (req, res) => {
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             if (fileUrl) {
-                loadPDF();
+                console.log('Page loaded with PDF URL:', fileUrl);
+                // Test PDF access first, then optionally auto-load
+                testPDFAccess();
+            } else {
+                showStatus('No PDF URL provided', 'error');
             }
         });
     </script>
@@ -749,4 +985,6 @@ app.listen(PORT, () => {
     console.log('  - POST /download-and-redact (for LWC integration)');
     console.log('  - GET /embed (embedded redaction interface)');
     console.log('  - GET /health (health check)');
+    console.log('  - GET /proxy-pdf (PDF proxy for CORS handling)');
+    console.log('  - GET /test-pdf-access (PDF accessibility testing)');
 });
