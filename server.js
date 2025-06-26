@@ -436,6 +436,11 @@ app.get('/embed', (req, res) => {
         }
         
         function setupRedactionDrawing(canvas, container, viewport) {
+            let isDrawing = false;
+            let startPos = null;
+            let currentRedactionDiv = null;
+            
+            // Mouse down on canvas
             canvas.addEventListener('mousedown', function(e) {
                 isDrawing = true;
                 const rect = canvas.getBoundingClientRect();
@@ -455,9 +460,11 @@ app.get('/embed', (req, res) => {
                 container.appendChild(currentRedactionDiv);
                 
                 e.preventDefault();
+                e.stopPropagation();
             });
             
-            canvas.addEventListener('mousemove', function(e) {
+            // Mouse move on document (not just canvas) - this is key!
+            document.addEventListener('mousemove', function(e) {
                 if (!isDrawing || !currentRedactionDiv) return;
                 
                 const rect = canvas.getBoundingClientRect();
@@ -466,10 +473,16 @@ app.get('/embed', (req, res) => {
                     y: e.clientY - rect.top
                 };
                 
-                const width = Math.abs(currentPos.x - startPos.x);
-                const height = Math.abs(currentPos.y - startPos.y);
-                const left = Math.min(startPos.x, currentPos.x);
-                const top = Math.min(startPos.y, currentPos.y);
+                // Constrain to canvas boundaries
+                const constrainedPos = {
+                    x: Math.max(0, Math.min(currentPos.x, canvas.width)),
+                    y: Math.max(0, Math.min(currentPos.y, canvas.height))
+                };
+                
+                const width = Math.abs(constrainedPos.x - startPos.x);
+                const height = Math.abs(constrainedPos.y - startPos.y);
+                const left = Math.min(startPos.x, constrainedPos.x);
+                const top = Math.min(startPos.y, constrainedPos.y);
                 
                 currentRedactionDiv.style.left = left + 'px';
                 currentRedactionDiv.style.top = top + 'px';
@@ -477,9 +490,11 @@ app.get('/embed', (req, res) => {
                 currentRedactionDiv.style.height = height + 'px';
                 
                 e.preventDefault();
+                e.stopPropagation();
             });
             
-            canvas.addEventListener('mouseup', function(e) {
+            // Mouse up on document (not just canvas) - this is key!
+            document.addEventListener('mouseup', function(e) {
                 if (!isDrawing || !currentRedactionDiv) return;
                 
                 isDrawing = false;
@@ -505,11 +520,12 @@ app.get('/embed', (req, res) => {
                     currentRedactionDiv.setAttribute('data-redaction-id', redactionData.elementId);
                     
                     // Add click handler to remove redaction
-                    currentRedactionDiv.addEventListener('click', function() {
+                    currentRedactionDiv.addEventListener('click', function(clickEvent) {
                         const redactionId = this.getAttribute('data-redaction-id');
                         redactions = redactions.filter(r => r.elementId !== redactionId);
                         this.remove();
                         updateStatus();
+                        clickEvent.stopPropagation();
                     });
                     
                     updateStatus();
@@ -519,12 +535,26 @@ app.get('/embed', (req, res) => {
                 }
                 
                 currentRedactionDiv = null;
+                startPos = null;
+                
                 e.preventDefault();
+                e.stopPropagation();
             });
             
             // Prevent context menu
             canvas.addEventListener('contextmenu', function(e) {
                 e.preventDefault();
+            });
+            
+            // Prevent text selection during drawing
+            canvas.addEventListener('selectstart', function(e) {
+                e.preventDefault();
+            });
+            
+            // Handle mouse leave canvas
+            canvas.addEventListener('mouseleave', function(e) {
+                // Don't stop drawing when mouse leaves canvas, 
+                // document listeners will handle it
             });
         }
         
