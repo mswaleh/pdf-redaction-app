@@ -831,7 +831,7 @@ app.get('/embed', (req, res) => {
     res.send(embedHtml);
 });
 
-// Original endpoints (keeping for backward compatibility)
+// REPLACE the existing /upload endpoint:
 app.post('/upload', upload.single('pdf'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No PDF file uploaded' });
@@ -840,52 +840,97 @@ app.post('/upload', upload.single('pdf'), (req, res) => {
     res.json({ 
         filename: req.file.filename,
         originalName: req.file.originalname,
-        path: `/uploads/${req.file.filename}`
+        path: `/uploads/${req.file.filename}`,
+        success: true
     });
+});
+
+// ADD new endpoint for processing base64 content:
+app.post('/process-pdf-content', async (req, res) => {
+    try {
+        const { fileName, contentBase64 } = req.body;
+        
+        if (!fileName || !contentBase64) {
+            return res.status(400).json({ error: 'Missing fileName or contentBase64' });
+        }
+
+        console.log(`Processing PDF content for ${fileName}`);
+        
+        // Convert base64 to buffer and save temporarily
+        const pdfBuffer = Buffer.from(contentBase64, 'base64');
+        const tempFileName = Date.now() + '-' + fileName;
+        const filePath = path.join(__dirname, 'uploads', tempFileName);
+        
+        fs.writeFileSync(filePath, pdfBuffer);
+        
+        res.json({
+            success: true,
+            filename: tempFileName,
+            originalName: fileName,
+            message: 'PDF content processed successfully'
+        });
+
+    } catch (error) {
+        console.error('Error processing PDF content:', error);
+        res.status(500).json({ error: 'Failed to process PDF content: ' + error.message });
+    }
 });
 
 app.use('/uploads', express.static('uploads'));
 
+// REPLACE the existing /redact endpoint:
 app.post('/redact', async (req, res) => {
     try {
-        const { filename, redactions } = req.body;
+        const { filename, redactions, contentBase64 } = req.body;
         
-        if (!filename || !redactions) {
-            return res.status(400).json({ error: 'Missing filename or redactions' });
+        let filePath;
+        let pdfBytes;
+        
+        if (contentBase64) {
+            // Working with base64 content directly
+            console.log(`Processing redactions on base64 content`);
+            pdfBytes = Buffer.from(contentBase64, 'base64');
+        } else if (filename) {
+            // Working with uploaded file
+            filePath = path.join(__dirname, 'uploads', filename);
+            if (!fs.existsSync(filePath)) {
+                return res.status(404).json({ error: 'File not found' });
+            }
+            pdfBytes = fs.readFileSync(filePath);
+        } else {
+            return res.status(400).json({ error: 'Missing filename or contentBase64' });
         }
 
-        const filePath = path.join(__dirname, 'uploads', filename);
-        
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({ error: 'File not found' });
+        if (!redactions) {
+            return res.status(400).json({ error: 'Missing redactions' });
         }
 
-        console.log(`Processing ${redactions.length} redactions for ${filename}`);
+        console.log(`Processing ${redactions.length} redactions`);
 
-        const existingPdfBytes = fs.readFileSync(filePath);
-        const pdfDoc = await PDFDocument.load(existingPdfBytes);
+        // Process the PDF
+        const pdfDoc = await PDFDocument.load(pdfBytes);
         
+        // Apply true redactions
         for (const redaction of redactions) {
             await applyTrueTextRedaction(pdfDoc, redaction);
         }
 
+        // Save redacted PDF
         const redactedPdfBytes = await pdfDoc.save({
             useObjectStreams: false,
             addDefaultPage: false
         });
         
-        const redactedFilename = 'redacted-' + filename;
-        const redactedFilePath = path.join(__dirname, 'uploads', redactedFilename);
-        
-        fs.writeFileSync(redactedFilePath, redactedPdfBytes);
+        // Return base64 content instead of saving to file
+        const redactedBase64 = Buffer.from(redactedPdfBytes).toString('base64');
 
-        console.log(`Redaction complete: ${redactedFilename}`);
+        console.log(`Redaction complete, returning base64 content`);
 
         res.json({ 
             success: true,
-            redactedFilename: redactedFilename,
-            downloadPath: `/download/${redactedFilename}`,
-            redactionsApplied: redactions.length
+            redactedPdfBase64: redactedBase64,
+            redactionsApplied: redactions.length,
+            message: 'PDF redacted successfully'
         });
 
     } catch (error) {
@@ -995,6 +1040,356 @@ async function applyTrueTextRedaction(pdfDoc, redaction) {
         }
     }
 }
+
+// ADD new endpoint for iframe embedding:
+app.get('/embed', (req, res) => {
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Redaction Interface</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8f9fa;
+        }
+        
+        .container {
+            max-width: 100%;
+            height: calc(100vh - 40px);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .toolbar {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .pdf-container {
+            flex: 1;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: auto;
+        }
+        
+        canvas {
+            display: block;
+            margin: 20px auto;
+            border: 1px solid #ddd;
+            cursor: crosshair;
+        }
+        
+        .redaction-box {
+            position: absolute;
+            background: rgba(255, 0, 0, 0.3);
+            border: 2px solid red;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+        
+        .redaction-box:hover {
+            background: rgba(255, 0, 0, 0.5);
+        }
+        
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+        
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .status {
+            flex: 1;
+            color: #666;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="toolbar">
+            <div class="status" id="status">Waiting for PDF content...</div>
+            <button class="btn-success" onclick="completeRedaction()" id="completeBtn" disabled>
+                Complete Redaction
+            </button>
+        </div>
+        
+        <div class="pdf-container" id="pdfContainer">
+            <div class="loading">Loading PDF redaction interface...</div>
+        </div>
+    </div>
+
+    <script>
+        let pdfDoc = null;
+        let redactions = [];
+        let isDrawing = false;
+        let startPos = null;
+        let currentRedactionDiv = null;
+        
+        // Listen for PDF content from parent window
+        window.addEventListener('message', async function(event) {
+            if (event.data.type === 'loadPDFContent') {
+                await loadPDFFromBase64(event.data.contentBase64, event.data.fileName);
+            }
+        });
+        
+        async function loadPDFFromBase64(base64Content, fileName) {
+            try {
+                document.getElementById('status').textContent = 'Loading PDF: ' + fileName;
+                
+                // Convert base64 to Uint8Array
+                const binaryString = atob(base64Content);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                // Load PDF
+                pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
+                
+                // Render first page
+                await renderPage(1);
+                
+                document.getElementById('status').textContent = 'PDF loaded. Click and drag to create redaction areas.';
+                document.getElementById('completeBtn').disabled = false;
+                
+                // Notify parent that PDF is loaded
+                window.parent.postMessage({
+                    type: 'pdfLoaded',
+                    fileName: fileName
+                }, '*');
+                
+            } catch (error) {
+                console.error('Error loading PDF:', error);
+                document.getElementById('status').textContent = 'Error loading PDF: ' + error.message;
+                
+                window.parent.postMessage({
+                    type: 'error',
+                    error: error.message
+                }, '*');
+            }
+        }
+        
+        async function renderPage(pageNum) {
+            try {
+                const page = await pdfDoc.getPage(pageNum);
+                const viewport = page.getViewport({ scale: 1.5 });
+                
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                canvas.style.position = 'relative';
+                
+                // Clear container and add canvas
+                const container = document.getElementById('pdfContainer');
+                container.innerHTML = '';
+                container.appendChild(canvas);
+                
+                // Render PDF page
+                await page.render({
+                    canvasContext: context,
+                    viewport: viewport
+                }).promise;
+                
+                // Set up redaction drawing
+                setupRedactionDrawing(canvas, viewport);
+                
+            } catch (error) {
+                console.error('Error rendering page:', error);
+                throw error;
+            }
+        }
+        
+        function setupRedactionDrawing(canvas, viewport) {
+            const container = canvas.parentElement;
+            
+            canvas.addEventListener('mousedown', function(e) {
+                isDrawing = true;
+                const rect = canvas.getBoundingClientRect();
+                startPos = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                
+                // Create redaction div
+                currentRedactionDiv = document.createElement('div');
+                currentRedactionDiv.className = 'redaction-box';
+                currentRedactionDiv.style.left = startPos.x + 'px';
+                currentRedactionDiv.style.top = startPos.y + 'px';
+                currentRedactionDiv.style.width = '0px';
+                currentRedactionDiv.style.height = '0px';
+                
+                container.appendChild(currentRedactionDiv);
+            });
+            
+            canvas.addEventListener('mousemove', function(e) {
+                if (!isDrawing || !currentRedactionDiv) return;
+                
+                const rect = canvas.getBoundingClientRect();
+                const currentPos = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                
+                const width = Math.abs(currentPos.x - startPos.x);
+                const height = Math.abs(currentPos.y - startPos.y);
+                const left = Math.min(startPos.x, currentPos.x);
+                const top = Math.min(startPos.y, currentPos.y);
+                
+                currentRedactionDiv.style.left = left + 'px';
+                currentRedactionDiv.style.top = top + 'px';
+                currentRedactionDiv.style.width = width + 'px';
+                currentRedactionDiv.style.height = height + 'px';
+            });
+            
+            canvas.addEventListener('mouseup', function(e) {
+                if (!isDrawing || !currentRedactionDiv) return;
+                
+                isDrawing = false;
+                
+                // Check if redaction is large enough
+                const width = parseInt(currentRedactionDiv.style.width);
+                const height = parseInt(currentRedactionDiv.style.height);
+                
+                if (width > 10 && height > 10) {
+                    // Add click handler to remove redaction
+                    currentRedactionDiv.addEventListener('click', function() {
+                        currentRedactionDiv.remove();
+                        updateStatus();
+                    });
+                    
+                    updateStatus();
+                } else {
+                    // Remove if too small
+                    currentRedactionDiv.remove();
+                }
+                
+                currentRedactionDiv = null;
+            });
+        }
+        
+        function updateStatus() {
+            const redactionBoxes = document.querySelectorAll('.redaction-box');
+            document.getElementById('status').textContent = 
+                redactionBoxes.length + ' redaction areas created. Click on any redaction to remove it.';
+        }
+        
+        async function completeRedaction() {
+            try {
+                const redactionBoxes = document.querySelectorAll('.redaction-box');
+                
+                if (redactionBoxes.length === 0) {
+                    alert('Please create at least one redaction area before completing.');
+                    return;
+                }
+                
+                document.getElementById('status').textContent = 'Processing redactions...';
+                document.getElementById('completeBtn').disabled = true;
+                
+                // Collect redaction coordinates
+                const canvas = document.querySelector('canvas');
+                const redactionData = [];
+                
+                redactionBoxes.forEach(box => {
+                    redactionData.push({
+                        pageIndex: 0, // For now, only first page
+                        x: parseInt(box.style.left),
+                        y: parseInt(box.style.top),
+                        width: parseInt(box.style.width),
+                        height: parseInt(box.style.height),
+                        viewportWidth: canvas.width,
+                        viewportHeight: canvas.height
+                    });
+                });
+                
+                // Send redaction request to server
+                const response = await fetch('/redact', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        redactions: redactionData,
+                        contentBase64: window.originalPDFContent
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Send result back to parent window
+                    window.parent.postMessage({
+                        type: 'redactionComplete',
+                        data: {
+                            success: true,
+                            redactedPdfBase64: result.redactedPdfBase64,
+                            redactionsApplied: result.redactionsApplied
+                        }
+                    }, '*');
+                } else {
+                    throw new Error(result.error || 'Redaction failed');
+                }
+                
+            } catch (error) {
+                console.error('Error completing redaction:', error);
+                alert('Error completing redaction: ' + error.message);
+                document.getElementById('completeBtn').disabled = false;
+            }
+        }
+        
+        // Store original PDF content for redaction
+        window.originalPDFContent = null;
+        
+        // Override loadPDFFromBase64 to store content
+        const originalLoadPDF = loadPDFFromBase64;
+        loadPDFFromBase64 = async function(base64Content, fileName) {
+            window.originalPDFContent = base64Content;
+            return originalLoadPDF(base64Content, fileName);
+        };
+    </script>
+</body>
+</html>
+    `;
+    
+    res.send(html);
+});
 
 app.listen(PORT, () => {
     console.log(`PDF Redaction Server running on http://localhost:${PORT}`);
