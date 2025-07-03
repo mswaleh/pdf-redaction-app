@@ -4,47 +4,817 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Redaction Tool</title>
-    <link rel="stylesheet" href="style.css">
+    <!-- Salesforce Lightning Design System -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/styles/salesforce-lightning-design-system.min.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #f3f3f3;
+            font-family: 'Salesforce Sans', Arial, sans-serif;
+        }
+        
+        .slds-scope {
+            min-height: 100vh;
+        }
+        
+        .pdf-container {
+            position: relative;
+            display: inline-block;
+            margin-bottom: 20px;
+            border: 1px solid #d8dde6;
+            background: white;
+            border-radius: 0.25rem;
+            box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.1);
+        }
+
+        #pdfCanvas {
+            display: block;
+            max-width: 100%;
+            cursor: crosshair;
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+
+        #redactionLayer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+            overflow: hidden;
+        }
+
+        .redaction-box {
+            position: absolute;
+            background: rgba(194, 57, 52, 0.3);
+            border: 2px solid #c23934;
+            cursor: pointer;
+            pointer-events: all;
+            z-index: 10;
+            box-sizing: border-box;
+            min-width: 1px;
+            min-height: 1px;
+        }
+
+        .redaction-box:hover {
+            border-color: #a61e1a;
+            background: rgba(194, 57, 52, 0.5);
+        }
+
+        .upload-area {
+            border: 2px dashed #c9c9c9;
+            border-radius: 0.25rem;
+            padding: 3rem;
+            text-align: center;
+            background: #fafafa;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 1rem 0;
+        }
+
+        .upload-area:hover {
+            border-color: #0176d3;
+            background: #f4f6fe;
+        }
+
+        .upload-area.dragover {
+            border-color: #0176d3;
+            background: #ecebea;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+
+        .main-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+
+        .canvas-container {
+            position: relative;
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .viewer-section {
+            background: white;
+            border-radius: 0.25rem;
+            box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.1);
+            border: 1px solid #d8dde6;
+            padding: 1rem;
+        }
+
+        .toolbar-section {
+            background: white;
+            border-radius: 0.25rem;
+            box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.1);
+            border: 1px solid #d8dde6;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .footer-info {
+            text-align: center;
+            padding: 1rem;
+            color: #706e6b;
+            font-size: 0.875rem;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>PDF Redaction Tool</h1>
-            <p>Upload a PDF, redact sensitive content, and download the redacted version</p>
-        </header>
+    <div class="slds-scope">
+        <div class="main-container">
+            <!-- Header -->
+            <div class="slds-page-header">
+                <div class="slds-page-header__row">
+                    <div class="slds-page-header__col-title">
+                        <div class="slds-media">
+                            <div class="slds-media__figure">
+                                <span class="slds-icon_container slds-icon-standard-document">
+                                    <svg class="slds-icon slds-page-header__icon" aria-hidden="true">
+                                        <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/standard-sprite/svg/symbols.svg#document"></use>
+                                    </svg>
+                                </span>
+                            </div>
+                            <div class="slds-media__body">
+                                <div class="slds-page-header__name">
+                                    <div class="slds-page-header__name-title">
+                                        <h1>
+                                            <span class="slds-page-header__title slds-truncate" title="PDF Redaction Tool">PDF Redaction Tool</span>
+                                        </h1>
+                                    </div>
+                                </div>
+                                <p class="slds-page-header__name-meta">Securely redact sensitive content from PDF documents</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-        <div class="upload-section">
-            <input type="file" id="pdfInput" accept=".pdf" />
-            <button id="uploadBtn">Upload PDF</button>
+            <!-- Upload Section -->
+            <div class="slds-card slds-m-bottom_medium">
+                <div class="slds-card__header slds-grid">
+                    <header class="slds-media slds-media_center slds-has-flexi-truncate">
+                        <div class="slds-media__figure">
+                            <span class="slds-icon_container slds-icon-standard-upload">
+                                <svg class="slds-icon slds-icon_small" aria-hidden="true">
+                                    <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/standard-sprite/svg/symbols.svg#upload"></use>
+                                </svg>
+                            </span>
+                        </div>
+                        <div class="slds-media__body">
+                            <h2 class="slds-card__header-title">
+                                <span>Upload Document</span>
+                            </h2>
+                        </div>
+                    </header>
+                </div>
+                <div class="slds-card__body slds-card__body_inner">
+                    <div class="upload-area" onclick="selectFile()" id="uploadArea">
+                        <div class="slds-align_absolute-center" style="height: 100px;">
+                            <div class="slds-text-align_center">
+                                <span class="slds-icon_container slds-icon-utility-upload slds-m-bottom_small">
+                                    <svg class="slds-icon slds-icon_large slds-icon-text-light" aria-hidden="true">
+                                        <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#upload"></use>
+                                    </svg>
+                                </span>
+                                <h3 class="slds-text-heading_medium">Upload PDF for Redaction</h3>
+                                <p class="slds-text-color_weak">Click here or drag and drop a PDF file</p>
+                                <p class="slds-text-color_weak slds-text-body_small">Maximum file size: 50MB</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Toolbar Section -->
+            <div class="toolbar-section" id="toolsSection" style="display: none;">
+                <div class="slds-grid slds-gutters slds-wrap">
+                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-large-size_1-of-3">
+                        <div class="slds-form-element">
+                            <div class="slds-form-element__control">
+                                <button class="slds-button slds-button_brand slds-button_stretch" id="redactBtn">
+                                    <span class="slds-icon_container slds-icon-utility-edit slds-m-right_x-small">
+                                        <svg class="slds-icon slds-icon_x-small" aria-hidden="true">
+                                            <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#edit"></use>
+                                        </svg>
+                                    </span>
+                                    Redaction Tool Active
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-large-size_1-of-3">
+                        <div class="slds-form-element">
+                            <div class="slds-form-element__control">
+                                <button class="slds-button slds-button_destructive slds-button_stretch" id="clearBtn" onclick="clearAllRedactions()">
+                                    <span class="slds-icon_container slds-icon-utility-clear slds-m-right_x-small">
+                                        <svg class="slds-icon slds-icon_x-small" aria-hidden="true">
+                                            <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#clear"></use>
+                                        </svg>
+                                    </span>
+                                    Clear All Redactions
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-large-size_1-of-3">
+                        <div class="slds-form-element">
+                            <div class="slds-form-element__control">
+                                <button class="slds-button slds-button_success slds-button_stretch" id="saveBtn" onclick="completeRedaction()" disabled>
+                                    <span class="slds-icon_container slds-icon-utility-download slds-m-right_x-small">
+                                        <svg class="slds-icon slds-icon_x-small" aria-hidden="true">
+                                            <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#download"></use>
+                                        </svg>
+                                    </span>
+                                    Save Redacted PDF
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="slds-notify_container slds-is-relative slds-m-top_medium">
+                    <div class="slds-notify slds-notify_toast slds-theme_info" role="alert">
+                        <span class="slds-assistive-text">Info</span>
+                        <span class="slds-icon_container slds-icon-utility-info slds-m-right_small">
+                            <svg class="slds-icon slds-icon_small" aria-hidden="true">
+                                <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#info"></use>
+                            </svg>
+                        </span>
+                        <div class="slds-notify__content">
+                            <h2 class="slds-text-heading_small">Instructions</h2>
+                            <p>Click and drag on the PDF to create redaction areas. Click on any redaction to remove it. All text under redacted areas will be permanently removed from the document.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Viewer Section -->
+            <div class="viewer-section" id="viewerSection" style="display: none;">
+                <div class="canvas-container">
+                    <div class="pdf-container">
+                        <canvas id="pdfCanvas"></canvas>
+                        <div id="redactionLayer"></div>
+                    </div>
+                </div>
+                
+                <!-- Page Controls -->
+                <div class="slds-grid slds-grid_align-center slds-m-top_medium" id="pageControls" style="display: none;">
+                    <div class="slds-col slds-no-flex">
+                        <div class="slds-button-group" role="group">
+                            <button class="slds-button slds-button_neutral" id="prevPage" onclick="prevPage()">
+                                <span class="slds-icon_container slds-icon-utility-chevronleft slds-m-right_x-small">
+                                    <svg class="slds-icon slds-icon_x-small" aria-hidden="true">
+                                        <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#chevronleft"></use>
+                                    </svg>
+                                </span>
+                                Previous
+                            </button>
+                            <span class="slds-button slds-button_neutral" id="pageInfo">Page 1 of 1</span>
+                            <button class="slds-button slds-button_neutral" id="nextPage" onclick="nextPage()">
+                                Next
+                                <span class="slds-icon_container slds-icon-utility-chevronright slds-m-left_x-small">
+                                    <svg class="slds-icon slds-icon_x-small" aria-hidden="true">
+                                        <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#chevronright"></use>
+                                    </svg>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusContainer" class="slds-m-top_medium"></div>
+
+            <!-- Footer -->
+            <div class="footer-info">
+                <p>&copy; 2025 Your Name - PDF Redaction Tool. All text under redacted areas is permanently removed for maximum security.</p>
+            </div>
         </div>
-
-        <div class="tools-section" id="toolsSection" style="display: none;">
-            <div class="toolbar">
-                <button id="redactBtn" class="tool-btn active">Redaction Tool</button>
-                <button id="clearBtn" class="tool-btn">Clear All Redactions</button>
-                <button id="saveBtn" class="tool-btn save-btn">Save Redacted PDF</button>
-            </div>
-            <div class="instructions">
-                <p>Click and drag on the PDF to create redaction areas (black boxes)</p>
-            </div>
-        </div>
-
-        <div class="viewer-section" id="viewerSection" style="display: none;">
-            <div class="pdf-container">
-                <canvas id="pdfCanvas"></canvas>
-                <div id="redactionLayer"></div>
-            </div>
-            <div class="page-controls">
-                <button id="prevPage">Previous</button>
-                <span id="pageInfo">Page 1 of 1</span>
-                <button id="nextPage">Next</button>
-            </div>
-        </div>
-
-        <div class="status" id="statusDiv"></div>
     </div>
 
-    <script src="pdf.min.js"></script>
-    <script src="script.js"></script>
+    <input type="file" id="fileInput" accept=".pdf" onchange="handleFileSelect(event)">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        let pdfDoc = null;
+        let currentPage = 1;
+        let totalPages = 0;
+        let redactions = [];
+        let isDrawing = false;
+        let startPos = null;
+        let currentRedactionDiv = null;
+        let pdfContentBase64 = null;
+        
+        // Configure PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        
+        // Set up drag and drop
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type === 'application/pdf') {
+                handleFile(files[0]);
+            } else {
+                showNotification('Please upload a PDF file.', 'error');
+            }
+        });
+        
+        function selectFile() {
+            fileInput.click();
+        }
+        
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file && file.type === 'application/pdf') {
+                handleFile(file);
+            } else {
+                showNotification('Please select a PDF file.', 'error');
+            }
+        }
+        
+        async function handleFile(file) {
+            try {
+                showNotification('Loading PDF: ' + file.name, 'info');
+                
+                // Read file as base64
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const arrayBuffer = e.target.result;
+                    const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+                    await loadPDFFromBase64(base64String, file.name);
+                };
+                reader.readAsArrayBuffer(file);
+                
+            } catch (error) {
+                console.error('Error handling file:', error);
+                showNotification('Error loading file: ' + error.message, 'error');
+            }
+        }
+        
+        async function loadPDFFromBase64(base64Content, fileName) {
+            try {
+                showNotification('Loading PDF: ' + fileName, 'info');
+                
+                // Store the original content for redaction
+                pdfContentBase64 = base64Content;
+                
+                // Convert base64 to Uint8Array
+                const binaryString = atob(base64Content);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                // Load PDF
+                pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
+                totalPages = pdfDoc.numPages;
+                
+                // Clear redactions for new PDF
+                redactions = [];
+                
+                // Show sections
+                document.getElementById('toolsSection').style.display = 'block';
+                document.getElementById('viewerSection').style.display = 'block';
+                
+                // Render first page
+                await renderPage(1);
+                
+                showNotification(`PDF loaded (${totalPages} pages). Click and drag to create redaction areas.`, 'success');
+                document.getElementById('saveBtn').disabled = false;
+                
+            } catch (error) {
+                console.error('Error loading PDF:', error);
+                showNotification('Error loading PDF: ' + error.message, 'error');
+            }
+        }
+        
+        async function renderPage(pageNum) {
+            try {
+                const page = await pdfDoc.getPage(pageNum);
+                const viewport = page.getViewport({ scale: 1.5 });
+                
+                // Clear container
+                const container = document.querySelector('.canvas-container');
+                container.innerHTML = '';
+                
+                // Create canvas container
+                const canvasContainer = document.createElement('div');
+                canvasContainer.className = 'pdf-container';
+                
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                canvas.id = 'pdfCanvas';
+                
+                const redactionLayer = document.createElement('div');
+                redactionLayer.id = 'redactionLayer';
+                
+                canvasContainer.appendChild(canvas);
+                canvasContainer.appendChild(redactionLayer);
+                container.appendChild(canvasContainer);
+                
+                // Render PDF page
+                await page.render({
+                    canvasContext: context,
+                    viewport: viewport
+                }).promise;
+                
+                // Update page controls
+                updatePageControls();
+                
+                // Set up redaction drawing
+                setupRedactionDrawing(canvas, redactionLayer, viewport);
+                
+                // Render existing redactions for this page
+                renderExistingRedactions(redactionLayer, pageNum);
+                
+            } catch (error) {
+                console.error('Error rendering page:', error);
+                throw error;
+            }
+        }
+        
+        function updatePageControls() {
+            const pageControls = document.getElementById('pageControls');
+            const pageInfo = document.getElementById('pageInfo');
+            const prevBtn = document.getElementById('prevPage');
+            const nextBtn = document.getElementById('nextPage');
+            
+            if (totalPages > 1) {
+                pageControls.style.display = 'block';
+                pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+                prevBtn.disabled = currentPage <= 1;
+                nextBtn.disabled = currentPage >= totalPages;
+            } else {
+                pageControls.style.display = 'none';
+            }
+        }
+        
+        function prevPage() {
+            if (currentPage > 1) {
+                currentPage--;
+                renderPage(currentPage);
+            }
+        }
+        
+        function nextPage() {
+            if (currentPage < totalPages) {
+                currentPage++;
+                renderPage(currentPage);
+            }
+        }
+        
+        function setupRedactionDrawing(canvas, redactionLayer, viewport) {
+            let isDrawing = false;
+            let startPos = null;
+            let currentRedactionDiv = null;
+            
+            // Mouse down on canvas
+            canvas.addEventListener('mousedown', function(e) {
+                isDrawing = true;
+                const rect = canvas.getBoundingClientRect();
+                startPos = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                
+                // Create redaction div
+                currentRedactionDiv = document.createElement('div');
+                currentRedactionDiv.className = 'redaction-box';
+                currentRedactionDiv.style.left = startPos.x + 'px';
+                currentRedactionDiv.style.top = startPos.y + 'px';
+                currentRedactionDiv.style.width = '0px';
+                currentRedactionDiv.style.height = '0px';
+                
+                redactionLayer.appendChild(currentRedactionDiv);
+                
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            
+            // Mouse move on document
+            document.addEventListener('mousemove', function(e) {
+                if (!isDrawing || !currentRedactionDiv) return;
+                
+                const rect = canvas.getBoundingClientRect();
+                const currentPos = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                
+                // Constrain to canvas boundaries
+                const constrainedPos = {
+                    x: Math.max(0, Math.min(currentPos.x, canvas.width)),
+                    y: Math.max(0, Math.min(currentPos.y, canvas.height))
+                };
+                
+                const width = Math.abs(constrainedPos.x - startPos.x);
+                const height = Math.abs(constrainedPos.y - startPos.y);
+                const left = Math.min(startPos.x, constrainedPos.x);
+                const top = Math.min(startPos.y, constrainedPos.y);
+                
+                currentRedactionDiv.style.left = left + 'px';
+                currentRedactionDiv.style.top = top + 'px';
+                currentRedactionDiv.style.width = width + 'px';
+                currentRedactionDiv.style.height = height + 'px';
+                
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            
+            // Mouse up on document
+            document.addEventListener('mouseup', function(e) {
+                if (!isDrawing || !currentRedactionDiv) return;
+                
+                isDrawing = false;
+                
+                // Check if redaction is large enough
+                const width = parseInt(currentRedactionDiv.style.width);
+                const height = parseInt(currentRedactionDiv.style.height);
+                
+                if (width > 10 && height > 10) {
+                    // Store redaction data
+                    const redactionData = {
+                        pageIndex: currentPage - 1, // 0-based for PDF processing
+                        x: parseInt(currentRedactionDiv.style.left),
+                        y: parseInt(currentRedactionDiv.style.top),
+                        width: width,
+                        height: height,
+                        viewportWidth: canvas.width,
+                        viewportHeight: canvas.height,
+                        elementId: 'redaction_' + Date.now()
+                    };
+                    
+                    redactions.push(redactionData);
+                    currentRedactionDiv.setAttribute('data-redaction-id', redactionData.elementId);
+                    
+                    // Add click handler to remove redaction
+                    currentRedactionDiv.addEventListener('click', function(clickEvent) {
+                        const redactionId = this.getAttribute('data-redaction-id');
+                        redactions = redactions.filter(r => r.elementId !== redactionId);
+                        this.remove();
+                        updateRedactionStatus();
+                        clickEvent.stopPropagation();
+                    });
+                    
+                    updateRedactionStatus();
+                } else {
+                    // Remove if too small
+                    currentRedactionDiv.remove();
+                }
+                
+                currentRedactionDiv = null;
+                startPos = null;
+                
+                e.preventDefault();
+                e.stopPropagation();
+            });
+        }
+        
+        function renderExistingRedactions(redactionLayer, pageNum) {
+            const pageRedactions = redactions.filter(r => r.pageIndex === pageNum - 1);
+            
+            pageRedactions.forEach(redaction => {
+                const redactionDiv = document.createElement('div');
+                redactionDiv.className = 'redaction-box';
+                redactionDiv.style.left = redaction.x + 'px';
+                redactionDiv.style.top = redaction.y + 'px';
+                redactionDiv.style.width = redaction.width + 'px';
+                redactionDiv.style.height = redaction.height + 'px';
+                redactionDiv.setAttribute('data-redaction-id', redaction.elementId);
+                
+                // Add click handler to remove redaction
+                redactionDiv.addEventListener('click', function() {
+                    const redactionId = this.getAttribute('data-redaction-id');
+                    redactions = redactions.filter(r => r.elementId !== redactionId);
+                    this.remove();
+                    updateRedactionStatus();
+                });
+                
+                redactionLayer.appendChild(redactionDiv);
+            });
+        }
+        
+        function updateRedactionStatus() {
+            const totalRedactions = redactions.length;
+            const currentPageRedactions = redactions.filter(r => r.pageIndex === currentPage - 1).length;
+            
+            if (totalPages > 1) {
+                showNotification(
+                    `${totalRedactions} total redaction areas (${currentPageRedactions} on current page). Click on any redaction to remove it.`,
+                    'info'
+                );
+            } else {
+                showNotification(
+                    `${totalRedactions} redaction areas created. Click on any redaction to remove it.`,
+                    'info'
+                );
+            }
+        }
+        
+        function clearAllRedactions() {
+            redactions = [];
+            const redactionLayer = document.getElementById('redactionLayer');
+            if (redactionLayer) {
+                redactionLayer.innerHTML = '';
+            }
+            showNotification('All redactions cleared.', 'warning');
+        }
+        
+        async function completeRedaction() {
+            try {
+                if (redactions.length === 0) {
+                    showNotification('Please create at least one redaction area before completing.', 'warning');
+                    return;
+                }
+                
+                showNotification('Processing redactions...', 'info');
+                document.getElementById('saveBtn').disabled = true;
+                
+                console.log('Sending redaction data:', redactions);
+                
+                // Try server-side download first
+                const success = await tryServerSideDownload();
+                if (!success) {
+                    console.log('Server-side download failed, trying client-side...');
+                    await processRedactionForClientDownload();
+                }
+                
+            } catch (error) {
+                console.error('Error completing redaction:', error);
+                showNotification('Error: ' + error.message, 'error');
+            } finally {
+                document.getElementById('saveBtn').disabled = false;
+            }
+        }
+        
+        async function tryServerSideDownload() {
+            try {
+                console.log('Attempting server-side download...');
+                
+                const response = await fetch('/redact-and-download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        redactions: redactions,
+                        contentBase64: pdfContentBase64
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status} ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    downloadRedactedPDF(result.redactedPdfBase64, 'redacted_document.pdf');
+                    showNotification(
+                        `Redaction complete! ${result.redactionsApplied} areas processed.`,
+                        'success'
+                    );
+                } else {
+                    throw new Error(result.error || 'Redaction failed');
+                }
+                
+            } catch (error) {
+                console.error('Client-side redaction error:', error);
+                throw error;
+            }
+        }
+        
+        function downloadRedactedPDF(base64Data, filename) {
+            try {
+                console.log('Starting client-side PDF download...');
+                
+                if (!base64Data) {
+                    throw new Error('No PDF data received from server');
+                }
+                
+                const cleanBase64 = base64Data.replace(/\s/g, '');
+                
+                // Try blob approach
+                try {
+                    const binaryString = atob(cleanBase64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    
+                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                    
+                    if (blob.size > 0) {
+                        const url = URL.createObjectURL(blob);
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = url;
+                        downloadLink.download = filename;
+                        downloadLink.style.display = 'none';
+                        
+                        document.body.appendChild(downloadLink);
+                        downloadLink.click();
+                        document.body.removeChild(downloadLink);
+                        
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        return;
+                    }
+                } catch (e) {
+                    console.warn('Blob method failed:', e);
+                }
+                
+                // Fallback to data URL
+                const dataUrl = 'data:application/pdf;base64,' + cleanBase64;
+                const fallbackLink = document.createElement('a');
+                fallbackLink.href = dataUrl;
+                fallbackLink.download = filename;
+                fallbackLink.style.display = 'none';
+                document.body.appendChild(fallbackLink);
+                fallbackLink.click();
+                document.body.removeChild(fallbackLink);
+                
+            } catch (error) {
+                console.error('Download failed:', error);
+                showNotification('Download failed: ' + error.message, 'error');
+            }
+        }
+        
+        function showNotification(message, type = 'info') {
+            const container = document.getElementById('statusContainer');
+            container.innerHTML = '';
+            
+            let iconName = 'info';
+            let themeClass = 'slds-theme_info';
+            
+            switch (type) {
+                case 'success':
+                    iconName = 'success';
+                    themeClass = 'slds-theme_success';
+                    break;
+                case 'error':
+                    iconName = 'error';
+                    themeClass = 'slds-theme_error';
+                    break;
+                case 'warning':
+                    iconName = 'warning';
+                    themeClass = 'slds-theme_warning';
+                    break;
+                default:
+                    iconName = 'info';
+                    themeClass = 'slds-theme_info';
+            }
+            
+            const notification = document.createElement('div');
+            notification.className = `slds-notify_container slds-is-relative`;
+            notification.innerHTML = `
+                <div class="slds-notify slds-notify_toast ${themeClass}" role="alert">
+                    <span class="slds-assistive-text">${type}</span>
+                    <span class="slds-icon_container slds-icon-utility-${iconName} slds-m-right_small">
+                        <svg class="slds-icon slds-icon_small" aria-hidden="true">
+                            <use xlink:href="https://cdnjs.cloudflare.com/ajax/libs/design-system/2.24.2/icons/utility-sprite/svg/symbols.svg#${iconName}"></use>
+                        </svg>
+                    </span>
+                    <div class="slds-notify__content">
+                        <p>${message}</p>
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(notification);
+            
+            // Auto-hide success and info messages after 5 seconds
+            if (type === 'success' || type === 'info') {
+                setTimeout(() => {
+                    if (container.contains(notification)) {
+                        container.removeChild(notification);
+                    }
+                }, 5000);
+            }
+        }
+    </script>
 </body>
 </html>
