@@ -394,6 +394,111 @@ app.post('/api/redact-pdf', async (req, res) => {
     }
 });
 
+// Debug endpoint to help troubleshoot issues
+app.post('/debug-redaction', async (req, res) => {
+    try {
+        const { redactions, contentBase64 } = req.body;
+        
+        console.log('=== DEBUG REDACTION ENDPOINT ===');
+        console.log('Request headers:', req.headers);
+        console.log('Request body keys:', Object.keys(req.body));
+        console.log('Content-Type:', req.headers['content-type']);
+        
+        const debugInfo = {
+            timestamp: new Date().toISOString(),
+            requestInfo: {
+                hasContentBase64: !!contentBase64,
+                contentBase64Length: contentBase64 ? contentBase64.length : 0,
+                hasRedactions: !!redactions,
+                redactionsCount: redactions ? redactions.length : 0,
+                redactionsIsArray: Array.isArray(redactions)
+            },
+            serverInfo: {
+                nodeVersion: process.version,
+                platform: process.platform,
+                memoryUsage: process.memoryUsage(),
+                uptime: process.uptime()
+            }
+        };
+        
+        if (contentBase64) {
+            try {
+                const pdfBytes = Buffer.from(contentBase64, 'base64');
+                const pdfHeader = pdfBytes.slice(0, 10).toString();
+                debugInfo.pdfInfo = {
+                    bufferSize: pdfBytes.length,
+                    header: pdfHeader,
+                    isValidPdf: pdfHeader.startsWith('%PDF')
+                };
+                
+                if (pdfHeader.startsWith('%PDF')) {
+                    try {
+                        const pdfDoc = await PDFDocument.load(pdfBytes);
+                        debugInfo.pdfInfo.pageCount = pdfDoc.getPageCount();
+                        debugInfo.pdfInfo.loadSuccess = true;
+                    } catch (loadError) {
+                        debugInfo.pdfInfo.loadError = loadError.message;
+                        debugInfo.pdfInfo.loadSuccess = false;
+                    }
+                }
+            } catch (base64Error) {
+                debugInfo.pdfInfo = {
+                    base64Error: base64Error.message
+                };
+            }
+        }
+        
+        if (redactions && Array.isArray(redactions)) {
+            debugInfo.redactionInfo = {
+                validRedactions: 0,
+                invalidRedactions: 0,
+                samples: []
+            };
+            
+            redactions.forEach((redaction, index) => {
+                const isValid = (
+                    typeof redaction.pageIndex === 'number' &&
+                    typeof redaction.x === 'number' &&
+                    typeof redaction.y === 'number' &&
+                    typeof redaction.width === 'number' &&
+                    typeof redaction.height === 'number'
+                );
+                
+                if (isValid) {
+                    debugInfo.redactionInfo.validRedactions++;
+                } else {
+                    debugInfo.redactionInfo.invalidRedactions++;
+                }
+                
+                if (index < 3) { // Include first 3 redactions as samples
+                    debugInfo.redactionInfo.samples.push({
+                        index,
+                        redaction,
+                        isValid
+                    });
+                }
+            });
+        }
+        
+        console.log('Debug info:', JSON.stringify(debugInfo, null, 2));
+        
+        res.json({
+            success: true,
+            debugInfo: debugInfo,
+            message: 'Debug information collected successfully'
+        });
+        
+    } catch (error) {
+        console.error('Debug endpoint error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Debug endpoint failed',
+            message: error.message,
+            stack: error.stack
+        });
+    }
+});
+
 // Test endpoint for Salesforce integration testing
 app.post('/api/test-integration', (req, res) => {
     const testData = req.body;
@@ -464,43 +569,133 @@ app.post('/redact', async (req, res) => {
     try {
         const { filename, redactions, contentBase64 } = req.body;
         
+        console.log('Enhanced redaction endpoint called');
+        console.log('Request body keys:', Object.keys(req.body));
+        console.log('Redactions count:', redactions ? redactions.length : 'none');
+        
         let pdfBytes;
         
         if (contentBase64) {
             console.log(`Processing redactions on base64 content`);
-            pdfBytes = Buffer.from(contentBase64, 'base64');
+            try {
+                pdfBytes = Buffer.from(contentBase64, 'base64');
+                console.log('PDF buffer created, size:', pdfBytes.length, 'bytes');
+            } catch (base64Error) {
+                console.error('Error decoding base64:', base64Error);
+                return res.status(400).json({ 
+                    error: 'Invalid base64 content',
+                    message: base64Error.message,
+                    success: false
+                });
+            }
         } else if (filename) {
             const filePath = path.join(__dirname, 'uploads', filename);
             if (!fs.existsSync(filePath)) {
-                return res.status(404).json({ error: 'File not found' });
+                console.error('File not found:', filePath);
+                return res.status(404).json({ 
+                    error: 'File not found',
+                    success: false
+                });
             }
             pdfBytes = fs.readFileSync(filePath);
+            console.log('PDF loaded from file, size:', pdfBytes.length, 'bytes');
         } else {
-            return res.status(400).json({ error: 'Missing filename or contentBase64' });
+            console.error('Missing filename or contentBase64');
+            return res.status(400).json({ 
+                error: 'Missing filename or contentBase64',
+                success: false
+            });
         }
 
         if (!redactions || !Array.isArray(redactions)) {
-            return res.status(400).json({ error: 'Missing or invalid redactions array' });
+            console.error('Invalid redactions array:', redactions);
+            return res.status(400).json({ 
+                error: 'Missing or invalid redactions array',
+                success: false
+            });
+        }
+
+        if (redactions.length === 0) {
+            console.error('No redactions provided');
+            return res.status(400).json({ 
+                error: 'At least one redaction is required',
+                success: false
+            });
         }
 
         console.log(`Processing ${redactions.length} redactions with enhanced text removal`);
 
+        // Validate PDF content
+        if (pdfBytes.length < 100) {
+            console.error('PDF content too small, likely invalid');
+            return res.status(400).json({ 
+                error: 'Invalid PDF content - too small',
+                success: false
+            });
+        }
+
+        // Check PDF header
+        const pdfHeader = pdfBytes.slice(0, 4).toString();
+        if (pdfHeader !== '%PDF') {
+            console.error('Invalid PDF header:', pdfHeader);
+            return res.status(400).json({ 
+                error: 'Invalid PDF content - missing PDF header',
+                success: false
+            });
+        }
+
         // Process the PDF with enhanced text removal
-        const pdfDoc = await PDFDocument.load(pdfBytes);
+        let pdfDoc;
+        try {
+            pdfDoc = await PDFDocument.load(pdfBytes);
+            console.log('PDF loaded successfully, pages:', pdfDoc.getPageCount());
+        } catch (pdfLoadError) {
+            console.error('Error loading PDF:', pdfLoadError);
+            return res.status(400).json({ 
+                error: 'Failed to load PDF document',
+                message: pdfLoadError.message,
+                success: false
+            });
+        }
         
         // Apply enhanced redactions with true text removal
         let totalRemovedObjects = 0;
-        for (const redaction of redactions) {
-            const removedObjects = await applyEnhancedTextRedaction(pdfDoc, redaction);
-            totalRemovedObjects += removedObjects;
+        for (let i = 0; i < redactions.length; i++) {
+            const redaction = redactions[i];
+            console.log(`Processing redaction ${i + 1}/${redactions.length}:`, {
+                page: redaction.pageIndex,
+                x: redaction.x,
+                y: redaction.y,
+                width: redaction.width,
+                height: redaction.height
+            });
+            
+            try {
+                const removedObjects = await applyEnhancedTextRedaction(pdfDoc, redaction);
+                totalRemovedObjects += removedObjects;
+            } catch (redactionError) {
+                console.error(`Error applying redaction ${i + 1}:`, redactionError);
+                // Continue with other redactions but log the error
+            }
         }
 
         // Save redacted PDF with optimization
-        const redactedPdfBytes = await pdfDoc.save({
-            useObjectStreams: false,
-            addDefaultPage: false,
-            objectsMap: new Map() // Force regeneration of object references
-        });
+        let redactedPdfBytes;
+        try {
+            redactedPdfBytes = await pdfDoc.save({
+                useObjectStreams: false,
+                addDefaultPage: false,
+                objectsMap: new Map() // Force regeneration of object references
+            });
+            console.log('PDF saved successfully, size:', redactedPdfBytes.length, 'bytes');
+        } catch (saveError) {
+            console.error('Error saving PDF:', saveError);
+            return res.status(500).json({ 
+                error: 'Failed to save redacted PDF',
+                message: saveError.message,
+                success: false
+            });
+        }
         
         // Return base64 content
         const redactedBase64 = Buffer.from(redactedPdfBytes).toString('base64');
@@ -517,7 +712,16 @@ app.post('/redact', async (req, res) => {
 
     } catch (error) {
         console.error('Enhanced redaction error:', error);
-        res.status(500).json({ error: 'Failed to redact PDF: ' + error.message });
+        
+        // Make sure we haven't already sent a response
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                error: 'Failed to redact PDF',
+                message: error.message,
+                success: false,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            });
+        }
     }
 });
 
@@ -526,43 +730,113 @@ app.post('/redact-and-download', async (req, res) => {
     try {
         const { filename, redactions, contentBase64 } = req.body;
         
+        console.log('Enhanced download endpoint called');
+        console.log('Request body keys:', Object.keys(req.body));
+        console.log('Redactions count:', redactions ? redactions.length : 'none');
+        console.log('Content base64 length:', contentBase64 ? contentBase64.length : 'none');
+        
         let pdfBytes;
         
         if (contentBase64) {
             console.log(`Processing redactions on base64 content for download`);
-            pdfBytes = Buffer.from(contentBase64, 'base64');
+            try {
+                pdfBytes = Buffer.from(contentBase64, 'base64');
+                console.log('PDF buffer created, size:', pdfBytes.length, 'bytes');
+            } catch (base64Error) {
+                console.error('Error decoding base64:', base64Error);
+                return res.status(400).json({ 
+                    error: 'Invalid base64 content',
+                    message: base64Error.message 
+                });
+            }
         } else if (filename) {
             const filePath = path.join(__dirname, 'uploads', filename);
             if (!fs.existsSync(filePath)) {
+                console.error('File not found:', filePath);
                 return res.status(404).json({ error: 'File not found' });
             }
             pdfBytes = fs.readFileSync(filePath);
+            console.log('PDF loaded from file, size:', pdfBytes.length, 'bytes');
         } else {
+            console.error('Missing filename or contentBase64');
             return res.status(400).json({ error: 'Missing filename or contentBase64' });
         }
 
         if (!redactions || !Array.isArray(redactions)) {
+            console.error('Invalid redactions array:', redactions);
             return res.status(400).json({ error: 'Missing or invalid redactions array' });
+        }
+
+        if (redactions.length === 0) {
+            console.error('No redactions provided');
+            return res.status(400).json({ error: 'At least one redaction is required' });
         }
 
         console.log(`Processing ${redactions.length} redactions for direct download with enhanced text removal`);
 
+        // Validate PDF content
+        if (pdfBytes.length < 100) {
+            console.error('PDF content too small, likely invalid');
+            return res.status(400).json({ error: 'Invalid PDF content - too small' });
+        }
+
+        // Check PDF header
+        const pdfHeader = pdfBytes.slice(0, 4).toString();
+        if (pdfHeader !== '%PDF') {
+            console.error('Invalid PDF header:', pdfHeader);
+            return res.status(400).json({ error: 'Invalid PDF content - missing PDF header' });
+        }
+
         // Process the PDF with enhanced text removal
-        const pdfDoc = await PDFDocument.load(pdfBytes);
+        let pdfDoc;
+        try {
+            pdfDoc = await PDFDocument.load(pdfBytes);
+            console.log('PDF loaded successfully, pages:', pdfDoc.getPageCount());
+        } catch (pdfLoadError) {
+            console.error('Error loading PDF:', pdfLoadError);
+            return res.status(400).json({ 
+                error: 'Failed to load PDF document',
+                message: pdfLoadError.message 
+            });
+        }
         
         // Apply enhanced redactions
         let totalRemovedObjects = 0;
-        for (const redaction of redactions) {
-            const removedObjects = await applyEnhancedTextRedaction(pdfDoc, redaction);
-            totalRemovedObjects += removedObjects;
+        for (let i = 0; i < redactions.length; i++) {
+            const redaction = redactions[i];
+            console.log(`Processing redaction ${i + 1}/${redactions.length}:`, {
+                page: redaction.pageIndex,
+                x: redaction.x,
+                y: redaction.y,
+                width: redaction.width,
+                height: redaction.height
+            });
+            
+            try {
+                const removedObjects = await applyEnhancedTextRedaction(pdfDoc, redaction);
+                totalRemovedObjects += removedObjects;
+            } catch (redactionError) {
+                console.error(`Error applying redaction ${i + 1}:`, redactionError);
+                // Continue with other redactions but log the error
+            }
         }
 
         // Save redacted PDF with optimization
-        const redactedPdfBytes = await pdfDoc.save({
-            useObjectStreams: false,
-            addDefaultPage: false,
-            objectsMap: new Map()
-        });
+        let redactedPdfBytes;
+        try {
+            redactedPdfBytes = await pdfDoc.save({
+                useObjectStreams: false,
+                addDefaultPage: false,
+                objectsMap: new Map()
+            });
+            console.log('PDF saved successfully, size:', redactedPdfBytes.length, 'bytes');
+        } catch (saveError) {
+            console.error('Error saving PDF:', saveError);
+            return res.status(500).json({ 
+                error: 'Failed to save redacted PDF',
+                message: saveError.message 
+            });
+        }
         
         // Create filename with timestamp
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -574,13 +848,26 @@ app.post('/redact-and-download', async (req, res) => {
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
         res.setHeader('Content-Length', redactedPdfBytes.length);
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
         
         // Send the PDF bytes directly
         res.send(Buffer.from(redactedPdfBytes));
+        
+        console.log('PDF download response sent successfully');
 
     } catch (error) {
         console.error('Enhanced download redaction error:', error);
-        res.status(500).json({ error: 'Failed to redact and download PDF: ' + error.message });
+        
+        // Make sure we haven't already sent a response
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                error: 'Failed to redact and download PDF',
+                message: error.message,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            });
+        }
     }
 });
 
