@@ -115,7 +115,70 @@ app.get('/health', (req, res) => {
         author: 'Your Name',
         timestamp: new Date().toISOString(),
         features: ['True text removal', 'Advanced content stream processing', 'Multiple page support']
+// Download endpoint (keep existing functionality)
+app.get('/download/:filename', (req, res) => {
+    const filename = req.params.filename;
+    const filePath = path.join(__dirname, 'uploads', filename);
+    
+    if (fs.existsSync(filePath)) {
+        res.download(filePath);
+    } else {
+        res.status(404).json({ error: 'File not found' });
+    }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+    console.error('Server error:', error);
+    res.status(500).json({ 
+        error: 'Internal server error',
+        message: error.message,
+        service: 'Enhanced PDF Redaction Service by Your Name'
     });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({ 
+        error: 'Endpoint not found',
+        message: 'The requested endpoint does not exist',
+        availableEndpoints: [
+            'GET /',
+            'GET /health',
+            'GET /embed',
+            'GET /test-download',
+            'POST /upload',
+            'POST /process-pdf-content',
+            'POST /redact',
+            'POST /redact-and-download',
+            'POST /api/load-pdf',
+            'POST /api/submit-redactions',
+            'POST /api/validate-redactions',
+            'GET /api/service-info',
+            'POST /api/test-integration',
+            'POST /api/redact-pdf (legacy)',
+            'GET /download/:filename'
+        ]
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`Enhanced PDF Redaction Server running on http://localhost:${PORT}`);
+    console.log('Author: Your Name');
+    console.log('Features:');
+    console.log('  ✓ True text removal (not just visual redaction)');
+    console.log('  ✓ Enhanced content stream processing');
+    console.log('  ✓ Salesforce Lightning Design System styling');
+    console.log('  ✓ Full Salesforce integration compatibility maintained');
+    console.log('  ✓ CORS enabled for Salesforce domains');
+    console.log('  ✓ Multiple download methods');
+    console.log('  ✓ Advanced PDF operator parsing');
+    console.log('  ✓ Font size and positioning analysis');
+    console.log('  ✓ Matrix transformation handling');
+    console.log('  ✓ RESTful API for direct Salesforce integration');
+    console.log('  ✓ Legacy API endpoints maintained');
+    console.log('Version: 2.0.0');
+    console.log('Salesforce Integration: Fully Compatible');
 });
 
 // Serve the enhanced interface
@@ -434,6 +497,37 @@ app.post('/api/test-integration', (req, res) => {
         integrationStatus: 'Fully compatible with Salesforce',
         testPassed: true
     });
+});
+
+// Process base64 PDF content (original endpoint maintained)
+app.post('/process-pdf-content', async (req, res) => {
+    try {
+        const { fileName, contentBase64 } = req.body;
+        
+        if (!fileName || !contentBase64) {
+            return res.status(400).json({ error: 'Missing fileName or contentBase64' });
+        }
+
+        console.log(`Processing PDF content for ${fileName}`);
+        
+        // Convert base64 to buffer and save temporarily
+        const pdfBuffer = Buffer.from(contentBase64, 'base64');
+        const tempFileName = Date.now() + '-' + fileName;
+        const filePath = path.join(__dirname, 'uploads', tempFileName);
+        
+        fs.writeFileSync(filePath, pdfBuffer);
+        
+        res.json({
+            success: true,
+            filename: tempFileName,
+            originalName: fileName,
+            message: 'PDF content processed successfully'
+        });
+
+    } catch (error) {
+        console.error('Error processing PDF content:', error);
+        res.status(500).json({ error: 'Failed to process PDF content: ' + error.message });
+    }
 });
 app.post('/process-pdf-content', async (req, res) => {
     try {
